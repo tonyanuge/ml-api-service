@@ -7,11 +7,13 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def get_embedding(text: str):
     """Return a vector embedding for the input text."""
+    print(f"[DEBUG] get_embedding input: {text[:50]}...")
     if not text or not isinstance(text, str):
         return []
 
     # Correct extraction
     embedding = model.encode([text])[0]
+    print(f"[DEBUG] get_embedding length: {len(embedding)}")
     return embedding.tolist()
 
 

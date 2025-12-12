@@ -27,9 +27,11 @@ class SemanticSearchRequest(BaseModel):
 # 3. Calssified API endpoint
 @app.post("/classify", response_model=ClassificationResponse)
 def classify_text(request: TextRequest):
+    print(f"[DEBUG] /classify input: {request.text}")
 
 # 4 Preprocessing the text
     cleaned = clean_text(request.text)
+    print(f"[DEBUG] cleaned: {cleaned}")
 
 # 5. Basic classification logic using cleaned text
     if "urgent" in cleaned:
@@ -41,11 +43,18 @@ def classify_text(request: TextRequest):
 #   
 @app.post("/embed")
 def embed_text(request: TextRequest):
+    print(f"[DEBUG] /embed input: {request.text}")
     embedding = get_embedding(request.text)
+    print(f"[DEBUG] embedding length: {len(embedding)}")
     return {"embedding": embedding}
 
 
-@app.post("/sementic-search")
+@app.post("/semantic-search")
 def sementic_search_endpoint(request: SemanticSearchRequest):
+    print(f"[DEBUG] /semantic-search query: {request.query}")
+    print(f"[DEBUG] /semantic-search documents: {len(request.documents)} items")
+    
     results = semantic_search(request.query, request.documents)
+
+    print(f"[DEBUG] /semantic-search results: {results}")
     return {"results": results}
