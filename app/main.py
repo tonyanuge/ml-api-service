@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from nlp.preprocess import clean_text
+from nlp.embedder import get_embedding, semantic_search
 
 app = FastAPI()
 
@@ -19,6 +20,10 @@ class ClassificationResponse(BaseModel):
     label: str
     confidence: float
 
+class SemanticSearchRequest(BaseModel):
+    query: str
+    documents: list[str]
+
 # 3. Calssified API endpoint
 @app.post("/classify", response_model=ClassificationResponse)
 def classify_text(request: TextRequest):
@@ -33,3 +38,14 @@ def classify_text(request: TextRequest):
         return ClassificationResponse(label="payment_request", confidence=0.87)
     else:
         return ClassificationResponse(label="general", confidence=0.55)
+#   
+@app.post("/embed")
+def embed_text(request: TextRequest):
+    embedding = get_embedding(request.text)
+    return {"embedding": embedding}
+
+
+@app.post("/sementic-search")
+def sementic_search_endpoint(request: SemanticSearchRequest):
+    results = semantic_search(request.query, request.documents)
+    return {"results": results}
