@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from nlp.preprocess import clean_text
 
 app = FastAPI()
 
@@ -21,11 +22,14 @@ class ClassificationResponse(BaseModel):
 # 3. Calssified API endpoint
 @app.post("/classify", response_model=ClassificationResponse)
 def classify_text(request: TextRequest):
-    text = request.text.lower()
 
-    if "urgent" in text:
+# 4 Preprocessing the text
+    cleaned = clean_text(request.text)
+
+# 5. Basic classification logic using cleaned text
+    if "urgent" in cleaned:
         return ClassificationResponse(label="urgent", confidence=0.92)
-    elif "paymeny" in text:
+    elif "paymeny" in cleaned:
         return ClassificationResponse(label="payment_request", confidence=0.87)
     else:
         return ClassificationResponse(label="general", confidence=0.55)
