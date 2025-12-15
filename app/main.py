@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from nlp.preprocess import clean_text
 from nlp.embedder import get_embedding, semantic_search
+import hybrid_search
+
 
 app = FastAPI()
 
@@ -57,4 +59,20 @@ def sementic_search_endpoint(request: SemanticSearchRequest):
     results = semantic_search(request.query, request.documents)
 
     print(f"[DEBUG] /semantic-search results: {results}")
+    return {"results": results}
+
+
+class HybridSearchRequest(BaseModel):
+    query: str
+    documents: list[str]
+
+
+@app.post("/hybrid-search")
+def hybrid_search_endpoint(request: HybridSearchRequest):
+    print("[DEBUG] /hybrid-search query:", request.query)
+    print("[DEBUG] /hybrid-search docs:", len(request.documents))
+
+    results = hybrid_search.hybrid_search(request.query, request.documents)
+
+    print("[DEBUG] /hybrid-search results:", results[:2])  # show top 2
     return {"results": results}
