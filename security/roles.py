@@ -2,6 +2,8 @@
 
 from enum import Enum
 from typing import Set, Dict
+from pathlib import Path
+import yaml
 
 
 class Role(str, Enum):
@@ -31,38 +33,24 @@ class Capability(str, Enum):
 
 
 # --------------------------------------------------
-# Role → Capability mapping
+# Load Role → Capability mapping from YAML
 # --------------------------------------------------
 
-ROLE_CAPABILITIES: Dict[Role, Set[Capability]] = {
-    Role.VIEWER: {
-        Capability.VIEW_SEARCH_RESULTS,
-    },
+_PERMISSIONS_PATH = Path(__file__).parent / "permissions.yaml"
 
-    Role.OPERATOR: {
-        Capability.VIEW_SEARCH_RESULTS,
-        Capability.EXECUTE_WORKFLOW,
-    },
+with open(_PERMISSIONS_PATH, "r", encoding="utf-8") as f:
+    _permissions_config = yaml.safe_load(f)
 
-    Role.MANAGER: {
-        Capability.VIEW_SEARCH_RESULTS,
-        Capability.EXECUTE_WORKFLOW,
-        Capability.OVERRIDE_ROUTE,
-        Capability.VIEW_AUDIT_LOGS,
-    },
 
-    Role.ADMIN: {
-        Capability.VIEW_SEARCH_RESULTS,
-        Capability.EXECUTE_WORKFLOW,
-        Capability.OVERRIDE_ROUTE,
-        Capability.VIEW_AUDIT_LOGS,
-        Capability.MANAGE_RULES,
-    },
-}
+ROLE_CAPABILITIES: Dict[Role, Set[Capability]] = {}
+
+for role_value, caps in _permissions_config.get("roles", {}).items():
+    role = Role(role_value)
+    ROLE_CAPABILITIES[role] = {Capability(c) for c in caps}
 
 
 # --------------------------------------------------
-# Helper utilities (used later by guards)
+# Helper utilities (used by guards)
 # --------------------------------------------------
 
 def role_has_capability(role: Role, capability: Capability) -> bool:

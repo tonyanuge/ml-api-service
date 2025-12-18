@@ -1,0 +1,20 @@
+roles:
+  viewer:
+    - view_search_results
+
+  operator:
+    - view_search_results
+    - execute_workflow
+
+  manager:
+    - view_search_results
+    - execute_workflow
+    - override_route
+    - view_audit_logs
+
+  admin:
+    - view_search_results
+    - execute_workflow
+    - override_route
+    - view_audit_logs
+    - manage_rules
