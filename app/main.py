@@ -11,6 +11,8 @@ from ingest_file.pdf_reader import extract_pdf_text
 from ingest_file.docx_reader import extract_docx_text
 from ingest_file.chunker import chunk_text
 from workflow.executor import WorkflowExecutor
+from security.guard import enforce_permission
+from security.roles import Role, Capability
 
 
 # ----------------------------------------------------
@@ -197,30 +199,43 @@ def route_from_search(request: HybridSearchRequest):
     End-to-end routing endpoint.
 
     Flow:
-    1. Run hybrid search (contextual only)
-    2. Classify the query
-    3. Route via YAML rules
-    4. Execute routing decision
-    5. Audit execution
+    1. Enforce permissions (Week 7.3)
+    2. Run hybrid search (contextual only)
+    3. Classify the query
+    4. Route via YAML rules
+    5. Execute routing decision
+    6. Audit execution
     """
 
+    # --- TEMP role assignment (Week 7.3) ---
+    role = Role.OPERATOR
+
+    # --- Permission enforcement ---
+    enforce_permission(
+        role=role,
+        capability=Capability.ROUTE_WORKFLOW
+    )
+
+    # 1. Hybrid search
     search_results = hybrid_search(
         query=request.query,
         faiss_store=faiss_db,
         top_k=request.top_k
     )
 
+    # 2. Classification
     classification_response = classify_text(
         TextRequest(text=request.query)
     )
-
     classification_label = classification_response.label
 
+    # 3. YAML-based routing
     decision = workflow_router.route(
         classification=classification_label,
         text=request.query
     )
 
+    # 4. Execute decision
     execution = executor.execute(
         decision=decision,
         context={
@@ -231,6 +246,7 @@ def route_from_search(request: HybridSearchRequest):
     )
 
     return {
+        "role": role,
         "query": request.query,
         "classification": classification_label,
         "decision": decision,
