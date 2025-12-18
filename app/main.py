@@ -1,78 +1,239 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Body
 from pydantic import BaseModel
+
 from nlp.preprocess import clean_text
-from nlp.embedder import get_embedding, semantic_search
-import hybrid_search
+from nlp.embedder import get_embedding
+from hybrid_search import hybrid_search  # this MUST be a function
+from workflow.router import WorkflowRouter
+from vector_db.faiss_store import FAISSStore
+from ingest_file.text_reader import read_text_file
+from ingest_file.pdf_reader import extract_pdf_text
+from ingest_file.docx_reader import extract_docx_text
+from ingest_file.chunker import chunk_text
+from workflow.executor import WorkflowExecutor
 
 
+# ----------------------------------------------------
+# Initialise FAISS once at startup
+# ----------------------------------------------------
+faiss_db = FAISSStore()
+workflow_router = WorkflowRouter()
+executor = WorkflowExecutor()
 app = FastAPI()
 
-# Root endpoint
-@app.get("/")
-def root():
-    return {"message": "ML API Service is running"}
 
-# 1. Define request body
+# ----------------------------------------------------
+# Request / Response Models
+# ----------------------------------------------------
 class TextRequest(BaseModel):
     text: str
 
 
-# 2. Define response body
 class ClassificationResponse(BaseModel):
     label: str
     confidence: float
 
+
 class SemanticSearchRequest(BaseModel):
     query: str
-    documents: list[str]
-
-# 3. Calssified API endpoint
-@app.post("/classify", response_model=ClassificationResponse)
-def classify_text(request: TextRequest):
-    print(f"[DEBUG] /classify input: {request.text}")
-
-# 4 Preprocessing the text
-    cleaned = clean_text(request.text)
-    print(f"[DEBUG] cleaned: {cleaned}")
-
-# 5. Basic classification logic using cleaned text
-    if "urgent" in cleaned:
-        return ClassificationResponse(label="urgent", confidence=0.92)
-    elif "paymeny" in cleaned:
-        return ClassificationResponse(label="payment_request", confidence=0.87)
-    else:
-        return ClassificationResponse(label="general", confidence=0.55)
-#   
-@app.post("/embed")
-def embed_text(request: TextRequest):
-    print(f"[DEBUG] /embed input: {request.text}")
-    embedding = get_embedding(request.text)
-    print(f"[DEBUG] embedding length: {len(embedding)}")
-    return {"embedding": embedding}
-
-
-@app.post("/semantic-search")
-def sementic_search_endpoint(request: SemanticSearchRequest):
-    print(f"[DEBUG] /semantic-search query: {request.query}")
-    print(f"[DEBUG] /semantic-search documents: {len(request.documents)} items")
-    
-    results = semantic_search(request.query, request.documents)
-
-    print(f"[DEBUG] /semantic-search results: {results}")
-    return {"results": results}
+    top_k: int = 5
 
 
 class HybridSearchRequest(BaseModel):
     query: str
-    documents: list[str]
+    top_k: int = 10
 
 
-@app.post("/hybrid-search")
-def hybrid_search_endpoint(request: HybridSearchRequest):
-    print("[DEBUG] /hybrid-search query:", request.query)
-    print("[DEBUG] /hybrid-search docs:", len(request.documents))
+class FAISSAddRequest(BaseModel):
+    text: str
 
-    results = hybrid_search.hybrid_search(request.query, request.documents)
 
-    print("[DEBUG] /hybrid-search results:", results[:2])  # show top 2
+class FAISSSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+# ----------------------------------------------------
+# ROOT
+# ----------------------------------------------------
+@app.get("/")
+def root():
+    return {"message": "ML API Service is running"}
+
+
+# ----------------------------------------------------
+# CLASSIFICATION
+# ----------------------------------------------------
+@app.post("/classify", response_model=ClassificationResponse)
+def classify_text(request: TextRequest):
+
+    cleaned = clean_text(request.text)
+
+    if "urgent" in cleaned:
+        return ClassificationResponse(label="urgent", confidence=0.92)
+    elif "payment" in cleaned:
+        return ClassificationResponse(label="payment_request", confidence=0.87)
+    else:
+        return ClassificationResponse(label="general", confidence=0.55)
+
+
+# ----------------------------------------------------
+# EMBEDDINGS
+# ----------------------------------------------------
+@app.post("/embed")
+def embed_text(request: TextRequest):
+    embedding = get_embedding(request.text)
+    return {"embedding": embedding}
+
+
+# ----------------------------------------------------
+# SEMANTIC SEARCH (FAISS ONLY)
+# ----------------------------------------------------
+@app.post("/semantic-search")
+def semantic_search_endpoint(
+    request: SemanticSearchRequest = Body(...)
+):
+    results = faiss_db.search_by_text(
+        query_text=request.query,
+        k=request.top_k
+    )
     return {"results": results}
+
+
+# ----------------------------------------------------
+# HYBRID SEARCH (FAISS → rerank)
+# ----------------------------------------------------
+@app.post("/hybrid-search")
+def hybrid_search_endpoint(
+    request: HybridSearchRequest = Body(...)
+):
+    # Step 1: semantic recall from FAISS
+    semantic_results = faiss_db.search_by_text(
+        query_text=request.query,
+        k=request.top_k
+    )
+
+    # Step 2: hybrid reranking
+    results = hybrid_search(
+        query=request.query,
+        faiss_store=faiss_db,
+        top_k=request.top_k
+    )
+
+
+    return {"results": results}
+
+
+# ----------------------------------------------------
+# FAISS — ADD DOCUMENT
+# ----------------------------------------------------
+@app.post("/faiss/add")
+def faiss_add(request: FAISSAddRequest):
+
+    faiss_db.add_document(request.text)
+
+    return {
+        "status": "ok",
+        "stored_text": request.text
+    }
+
+
+# ----------------------------------------------------
+# FAISS — SEARCH
+# ----------------------------------------------------
+@app.post("/faiss/search")
+def faiss_search(request: FAISSSearchRequest):
+
+    results = faiss_db.search_by_text(
+        query_text=request.query,
+        k=request.top_k
+    )
+
+    return {"results": results}
+
+
+# ----------------------------------------------------
+# FILE INGESTION → FAISS
+# ----------------------------------------------------
+@app.post("/ingest-file")
+async def ingest_file(file: UploadFile = File(...)):
+
+    ext = file.filename.lower()
+    raw_bytes = await file.read()
+
+    # Decide how to extract text
+    if ext.endswith(".txt"):
+        text = read_text_file(raw_bytes)
+    elif ext.endswith(".pdf"):
+        text = extract_pdf_text(raw_bytes)
+    elif ext.endswith(".docx"):
+        text = extract_docx_text(raw_bytes)
+    else:
+        return {"error": "Unsupported file type"}
+
+    # Break into chunks
+    chunks = chunk_text(text)
+
+    # Store each chunk in FAISS
+    for i, chunk in enumerate(chunks):
+        faiss_db.add_document({
+            "text": chunk,
+            "source_file": file.filename,
+            "chunk_id": i,
+            "total_chunks": len(chunks),
+            "pipeline": "api_upload"
+        })
+
+    return {
+        "filename": file.filename,
+        "chunks_stored": len(chunks)
+    }
+
+
+
+@app.post("/route-from-search")
+def route_from_search(request: HybridSearchRequest):
+    """
+    End-to-end routing endpoint.
+
+    Flow:
+    1. Run hybrid search (contextual only)
+    2. Classify the query
+    3. Route via YAML rules
+    4. Execute routing decision
+    5. Audit execution
+    """
+
+    search_results = hybrid_search(
+        query=request.query,
+        faiss_store=faiss_db,
+        top_k=request.top_k
+    )
+
+    classification_response = classify_text(
+        TextRequest(text=request.query)
+    )
+
+    classification_label = classification_response.label
+
+    decision = workflow_router.route(
+        classification=classification_label,
+        text=request.query
+    )
+
+    execution = executor.execute(
+        decision=decision,
+        context={
+            "query": request.query,
+            "classification": classification_label,
+            "top_k": request.top_k
+        }
+    )
+
+    return {
+        "query": request.query,
+        "classification": classification_label,
+        "decision": decision,
+        "execution": execution,
+        "search_results": search_results
+    }

@@ -1,0 +1,11 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Runtime data
+audit_logs/
+data/
+
+# Local env
+.env
+.venv/

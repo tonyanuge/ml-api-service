@@ -1,0 +1,40 @@
+version: 1
+
+default_route:
+  queue: general_review
+  priority: normal
+
+routes:
+
+  - name: payment_requests
+    when:
+      classification: payment_request
+    route:
+      queue: finance_ops
+      priority: high
+
+  - name: urgent_items
+    when:
+      classification: urgent
+    route:
+      queue: priority_queue
+      priority: critical
+
+  - name: contracts
+    when:
+      keyword_contains:
+        - contract
+        - agreement
+    route:
+      queue: legal_review
+      priority: normal
+
+  - name: hr_documents
+    when:
+      keyword_contains:
+        - cv
+        - resume
+        - candidate
+    route:
+      queue: hr_ops
+      priority: normal
