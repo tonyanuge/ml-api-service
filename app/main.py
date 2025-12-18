@@ -1,9 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, Body
 from pydantic import BaseModel
-
+from fastapi.responses import JSONResponse
+from fastapi import Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 from nlp.preprocess import clean_text
 from nlp.embedder import get_embedding
 from hybrid_search import hybrid_search  # MUST be a function
+from fastapi.middleware.cors import CORSMiddleware
 
 from vector_db.faiss_store import FAISSStore
 from workflow.router import WorkflowRouter
@@ -16,17 +21,40 @@ from ingest_file.text_reader import read_text_file
 from ingest_file.pdf_reader import extract_pdf_text
 from ingest_file.docx_reader import extract_docx_text
 from ingest_file.chunker import chunk_text
+from app.errors import PermissionDenied, NoRouteMatched, EmptySearchResults
+from app.errors import DocuFlowError
+
+from audit.events import (
+    ROUTE_DECISION,
+    ROUTE_EXECUTED,
+    ROUTE_DENIED,
+    ROUTE_FAILED,
+)
 
 
 # ----------------------------------------------------
 # App + Core Services
 # ----------------------------------------------------
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],        # OK for local + demo
+    allow_credentials=True,
+    allow_methods=["*"],        # Enables OPTIONS
+    allow_headers=["*"],
+)
 
 faiss_db = FAISSStore()
 workflow_router = WorkflowRouter()
 executor = WorkflowExecutor()
 audit_logger = AuditLogger()
+
+# ----------------------------------------------------
+# UI (Static HTML)
+# ----------------------------------------------------
+UI_DIR = Path(__file__).resolve().parent.parent / "ui"
+
+app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
 
 
 # ----------------------------------------------------
@@ -59,6 +87,11 @@ class FAISSSearchRequest(BaseModel):
     query: str
     top_k: int = 5
 
+
+
+@app.get("/ui")
+def serve_ui():
+    return FileResponse(UI_DIR / "index.html")
 
 # ----------------------------------------------------
 # ROOT
@@ -190,67 +223,101 @@ async def ingest_file(file: UploadFile = File(...)):
 # ----------------------------------------------------
 @app.post("/route-from-search")
 def route_from_search(request: HybridSearchRequest):
-    """
-    End-to-end routing endpoint.
 
-    Flow:
-    1. Enforce permissions
-    2. Run hybrid search
-    3. Classify the query
-    4. Route via YAML rules
-    5. Execute routing decision
-    6. Audit execution
-    """
-
-    # TEMP role (auth comes later)
     role = Role.OPERATOR
 
-    enforce_permission(
-        role=role,
-        capability=Capability.EXECUTE_WORKFLOW
-    )
+    try:
+        # 1. Permission check
+        enforce_permission(
+            role=role,
+            capability=Capability.EXECUTE_WORKFLOW
+        )
 
-    search_results = hybrid_search(
-        query=request.query,
-        faiss_store=faiss_db,
-        top_k=request.top_k
-    )
+        # 2. Hybrid search
+        search_results = hybrid_search(
+            query=request.query,
+            faiss_store=faiss_db,
+            top_k=request.top_k
+        )
 
-    classification_response = classify_text(
-        TextRequest(text=request.query)
-    )
-    classification_label = classification_response.label
+        if not search_results:
+            raise EmptySearchResults("No relevant documents found")
 
-    decision = workflow_router.route(
-        classification=classification_label,
-        text=request.query
-    )
+        # 3. Classification
+        classification_response = classify_text(
+            TextRequest(text=request.query)
+        )
+        classification_label = classification_response.label
 
-    execution = executor.execute(
-        decision=decision,
-        context={
-            "query": request.query,
-            "classification": classification_label,
-            "top_k": request.top_k
-        }
-    )
+        # 4. Routing decision
+        decision = workflow_router.route(
+            classification=classification_label,
+            text=request.query
+        )
 
-    audit_logger.log(
-        event="workflow_executed",
-        payload={
+        if not decision:
+            raise NoRouteMatched("No workflow rule matched")
+
+        # --- AUDIT: decision made ---
+        audit_logger.log(
+            event=ROUTE_DECISION,
+            payload={
+                "role": role,
+                "query": request.query,
+                "classification": classification_label,
+                "decision": decision,
+            }
+        )
+
+        # 5. Execute
+        execution = executor.execute(
+            decision=decision,
+            context={
+                "query": request.query,
+                "classification": classification_label,
+                "top_k": request.top_k
+            }
+        )
+
+        # --- AUDIT: execution completed ---
+        audit_logger.log(
+            event=ROUTE_EXECUTED,
+            payload={
+                "role": role,
+                "query": request.query,
+                "classification": classification_label,
+                "decision": decision,
+                "execution": execution,
+            }
+        )
+
+        return {
             "role": role,
             "query": request.query,
             "classification": classification_label,
             "decision": decision,
-            "execution": execution
+            "execution": execution,
+            "search_results": search_results
         }
-    )
 
-    return {
-        "role": role,
-        "query": request.query,
-        "classification": classification_label,
-        "decision": decision,
-        "execution": execution,
-        "search_results": search_results
-    }
+    except PermissionDenied as e:
+        audit_logger.log(
+            event=ROUTE_DENIED,
+            payload={
+                "role": role,
+                "query": request.query,
+                "reason": str(e)
+            }
+        )
+        raise
+
+    except DocuFlowError as e:
+        audit_logger.log(
+            event=ROUTE_FAILED,
+            payload={
+                "role": role,
+                "query": request.query,
+                "error": str(e)
+            }
+        )
+        raise

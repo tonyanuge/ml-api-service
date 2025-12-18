@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  docuflow-api:
+    container_name: docuflow-api
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      DOCUFLOW_ENV: container
+      DOCUFLOW_DEFAULT_ROLE: operator
+      DOCUFLOW_AUDIT_LOG_DIR: /app/audit_logs
+      DOCUFLOW_FAISS_DATA_DIR: /app/data
+    volumes:
+      - ./audit_logs:/app/audit_logs
+      - ./data:/app/data
+    restart: unless-stopped
