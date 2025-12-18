@@ -1,21 +1,25 @@
-import os
 import json
 from datetime import datetime
 from threading import Lock
+from pathlib import Path
 
 import faiss
 import numpy as np
 
 from nlp.embedder import get_embedding
-
+from app.config.settings import (
+    FAISS_DATA_DIR,
+    FAISS_INDEX_FILE,
+    FAISS_METADATA_FILE
+)
 
 # =========================
-# Configuration
+# Configuration (externalised)
 # =========================
 
-DATA_DIR = "data"
-INDEX_PATH = os.path.join(DATA_DIR, "store.index")
-META_PATH = os.path.join(DATA_DIR, "metadata.json")
+DATA_DIR: Path = FAISS_DATA_DIR
+INDEX_PATH: Path = DATA_DIR / FAISS_INDEX_FILE
+META_PATH: Path = DATA_DIR / FAISS_METADATA_FILE
 
 EMBEDDING_DIM = 384  # all-MiniLM-L6-v2
 
@@ -34,19 +38,19 @@ class FAISSStore:
     _lock = Lock()
 
     def __init__(self):
-        os.makedirs(DATA_DIR, exist_ok=True)
+        DATA_DIR.mkdir(exist_ok=True)
 
         # Load or create FAISS index
-        if os.path.exists(INDEX_PATH):
-            self.index = faiss.read_index(INDEX_PATH)
+        if INDEX_PATH.exists():
+            self.index = faiss.read_index(str(INDEX_PATH))
             print("[FAISS] Loaded index from disk.")
         else:
             self.index = faiss.IndexFlatL2(EMBEDDING_DIM)
-            faiss.write_index(self.index, INDEX_PATH)
+            faiss.write_index(self.index, str(INDEX_PATH))
             print("[FAISS] Created new index.")
 
         # Load or create metadata
-        if os.path.exists(META_PATH):
+        if META_PATH.exists():
             with open(META_PATH, "r", encoding="utf-8") as f:
                 self.metadata = json.load(f)
             print(f"[FAISS] Loaded {len(self.metadata)} metadata items.")
@@ -60,7 +64,7 @@ class FAISSStore:
     # =========================
 
     def _persist_index(self):
-        faiss.write_index(self.index, INDEX_PATH)
+        faiss.write_index(self.index, str(INDEX_PATH))
 
     def _persist_metadata(self):
         with open(META_PATH, "w", encoding="utf-8") as f:
@@ -73,7 +77,6 @@ class FAISSStore:
         """
         emb = get_embedding(text)
 
-        # FIX: handle list output
         if isinstance(emb, list):
             emb = np.array(emb, dtype="float32")
 
@@ -91,10 +94,8 @@ class FAISSStore:
         Backward-compatible ingestion method.
 
         Accepts:
-        - str (existing behaviour)
-        - dict with 'text' field (future metadata enrichment)
-
-        This method is REQUIRED because main.py already calls it.
+        - str
+        - dict with 'text' field
         """
 
         if isinstance(text_or_meta, str):
@@ -155,9 +156,6 @@ class FAISSStore:
     # =========================
 
     def search(self, query_embedding: np.ndarray, k: int = 5):
-        """
-        Low-level FAISS search.
-        """
         if self.index.ntotal == 0:
             return []
 
@@ -176,14 +174,8 @@ class FAISSStore:
         return results
 
     def search_by_text(self, query_text: str, k: int = 5):
-        """
-        Convenience wrapper: text -> embedding -> FAISS search.
-        """
         emb = self._embed_text(query_text)
         return self.search(emb, k)
 
     def retrieve(self, query_embedding: np.ndarray, k: int = 10):
-        """
-        Retrieval layer for RAG-style pipelines.
-        """
         return self.search(query_embedding, k)

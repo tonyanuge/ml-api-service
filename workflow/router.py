@@ -1,18 +1,37 @@
+# workflow/router.py
+
 import yaml
 from pathlib import Path
 
 
+# --------------------------------------------------
+# Rules configuration
+# --------------------------------------------------
 RULES_PATH = Path(__file__).parent / "rules.yaml"
 
 
 class WorkflowRouter:
+    """
+    YAML-driven workflow router.
+
+    - Industry-agnostic
+    - Deterministic
+    - No side effects
+    """
+
     def __init__(self, rules_path: Path = RULES_PATH):
         with open(rules_path, "r", encoding="utf-8") as f:
-            self.rules = yaml.safe_load(f)
+            self.rules = yaml.safe_load(f) or {}
 
     def route(self, *, classification: str, text: str) -> dict:
         """
-        Returns routing decision based on rules.yaml
+        Returns a routing decision based on rules.yaml.
+
+        Matching order:
+        1. classification (exact match)
+        2. keyword_contains (any match)
+        3. first rule wins
+        4. fallback to default_route
         """
 
         text_lower = text.lower()
@@ -20,19 +39,19 @@ class WorkflowRouter:
         for rule in self.rules.get("routes", []):
             conditions = rule.get("when", {})
 
-            # Classification match
+            # --- Classification condition ---
             if "classification" in conditions:
                 if classification != conditions["classification"]:
                     continue
 
-            # Keyword match
+            # --- Keyword condition ---
             if "keyword_contains" in conditions:
                 keywords = conditions["keyword_contains"]
-                if not any(k in text_lower for k in keywords):
+                if not any(k.lower() in text_lower for k in keywords):
                     continue
 
             # Match found
-            return rule["route"]
+            return rule.get("route", {})
 
-        # Fallback
+        # Fallback route
         return self.rules.get("default_route", {})

@@ -3,25 +3,30 @@ from pydantic import BaseModel
 
 from nlp.preprocess import clean_text
 from nlp.embedder import get_embedding
-from hybrid_search import hybrid_search  # this MUST be a function
-from workflow.router import WorkflowRouter
+from hybrid_search import hybrid_search  # MUST be a function
+
 from vector_db.faiss_store import FAISSStore
+from workflow.router import WorkflowRouter
+from workflow.executor import WorkflowExecutor
+from security.guard import enforce_permission
+from security.roles import Role, Capability
+from audit.logger import AuditLogger
+
 from ingest_file.text_reader import read_text_file
 from ingest_file.pdf_reader import extract_pdf_text
 from ingest_file.docx_reader import extract_docx_text
 from ingest_file.chunker import chunk_text
-from workflow.executor import WorkflowExecutor
-from security.guard import enforce_permission
-from security.roles import Role, Capability
 
 
 # ----------------------------------------------------
-# Initialise FAISS once at startup
+# App + Core Services
 # ----------------------------------------------------
+app = FastAPI()
+
 faiss_db = FAISSStore()
 workflow_router = WorkflowRouter()
 executor = WorkflowExecutor()
-app = FastAPI()
+audit_logger = AuditLogger()
 
 
 # ----------------------------------------------------
@@ -109,20 +114,11 @@ def semantic_search_endpoint(
 def hybrid_search_endpoint(
     request: HybridSearchRequest = Body(...)
 ):
-    # Step 1: semantic recall from FAISS
-    semantic_results = faiss_db.search_by_text(
-        query_text=request.query,
-        k=request.top_k
-    )
-
-    # Step 2: hybrid reranking
     results = hybrid_search(
         query=request.query,
         faiss_store=faiss_db,
         top_k=request.top_k
     )
-
-
     return {"results": results}
 
 
@@ -163,7 +159,6 @@ async def ingest_file(file: UploadFile = File(...)):
     ext = file.filename.lower()
     raw_bytes = await file.read()
 
-    # Decide how to extract text
     if ext.endswith(".txt"):
         text = read_text_file(raw_bytes)
     elif ext.endswith(".pdf"):
@@ -173,10 +168,8 @@ async def ingest_file(file: UploadFile = File(...)):
     else:
         return {"error": "Unsupported file type"}
 
-    # Break into chunks
     chunks = chunk_text(text)
 
-    # Store each chunk in FAISS
     for i, chunk in enumerate(chunks):
         faiss_db.add_document({
             "text": chunk,
@@ -192,56 +185,64 @@ async def ingest_file(file: UploadFile = File(...)):
     }
 
 
-
+# ----------------------------------------------------
+# ROUTE FROM SEARCH (Governed, Audited)
+# ----------------------------------------------------
 @app.post("/route-from-search")
 def route_from_search(request: HybridSearchRequest):
     """
     End-to-end routing endpoint.
 
     Flow:
-    1. Enforce permissions (Week 7.3)
-    2. Run hybrid search (contextual only)
+    1. Enforce permissions
+    2. Run hybrid search
     3. Classify the query
     4. Route via YAML rules
     5. Execute routing decision
     6. Audit execution
     """
 
-    # --- TEMP role assignment (Week 7.3) ---
+    # TEMP role (auth comes later)
     role = Role.OPERATOR
 
-    # --- Permission enforcement ---
     enforce_permission(
         role=role,
-        capability=Capability.ROUTE_WORKFLOW
+        capability=Capability.EXECUTE_WORKFLOW
     )
 
-    # 1. Hybrid search
     search_results = hybrid_search(
         query=request.query,
         faiss_store=faiss_db,
         top_k=request.top_k
     )
 
-    # 2. Classification
     classification_response = classify_text(
         TextRequest(text=request.query)
     )
     classification_label = classification_response.label
 
-    # 3. YAML-based routing
     decision = workflow_router.route(
         classification=classification_label,
         text=request.query
     )
 
-    # 4. Execute decision
     execution = executor.execute(
         decision=decision,
         context={
             "query": request.query,
             "classification": classification_label,
             "top_k": request.top_k
+        }
+    )
+
+    audit_logger.log(
+        event="workflow_executed",
+        payload={
+            "role": role,
+            "query": request.query,
+            "classification": classification_label,
+            "decision": decision,
+            "execution": execution
         }
     )
 
